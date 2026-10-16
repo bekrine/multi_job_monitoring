@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "morocco_job_bot_db"
-database_id = "LOCAL_OR_REMOTE_D1_DATABASE_ID"
+database_id = "2b5a9e57-2a82-4da0-8fe4-c9905e2eccd5"
 migrations_dir = "migrations"
 
 [vars]
