@@ -1,0 +1,16 @@
+name = "morocco-it-jobs-bot"
+main = "src/worker/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 Database binding for multi-user state & job persistence
+[[d1_databases]]
+binding = "DB"
+database_name = "morocco_job_bot_db"
+database_id = "LOCAL_OR_REMOTE_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+DEFAULT_LANGUAGE = "fr"
+RATE_LIMIT_SEARCH_PER_MINUTE = "5"
+BATCH_NOTIFICATION_LIMIT = "15"
