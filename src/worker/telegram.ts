@@ -11,7 +11,8 @@ export function escapeHtml(str: string): string {
   return (str || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 export interface SendMessageOptions {
@@ -23,7 +24,9 @@ export interface SendMessageOptions {
 export class TelegramBotClient {
   constructor(
     private readonly botToken: string,
-    private readonly fetchFn: typeof fetch = fetch
+    // FIX: wrap fetch so it is not called with `this` = TelegramBotClient
+    // (causes "Illegal invocation" in Cloudflare Workers).
+    private readonly fetchFn: typeof fetch = (...args) => fetch(...args)
   ) {}
 
   public async sendMessage(
@@ -58,6 +61,7 @@ export class TelegramBotClient {
       };
 
       if (!data.ok) {
+        console.error('Telegram sendMessage failed:', data.description, 'chat:', chatId);
         return {
           ok: false,
           description: data.description,
@@ -67,6 +71,7 @@ export class TelegramBotClient {
 
       return { ok: true, messageId: data.result?.message_id };
     } catch (err) {
+      console.error('Telegram sendMessage fetch error:', (err as Error).message);
       return { ok: false, description: (err as Error).message };
     }
   }
@@ -98,8 +103,12 @@ export class TelegramBotClient {
       });
 
       const data = (await res.json()) as { ok: boolean; description?: string };
+      if (!data.ok) {
+        console.error('Telegram editMessageText failed:', data.description);
+      }
       return { ok: data.ok, description: data.description };
     } catch (err) {
+      console.error('Telegram editMessageText fetch error:', (err as Error).message);
       return { ok: false, description: (err as Error).message };
     }
   }
@@ -118,9 +127,13 @@ export class TelegramBotClient {
           text: text || '',
         }),
       });
-      const data = (await res.json()) as { ok: boolean };
+      const data = (await res.json()) as { ok: boolean; description?: string };
+      if (!data.ok) {
+        console.error('Telegram answerCallbackQuery failed:', data.description);
+      }
       return data.ok;
-    } catch {
+    } catch (err) {
+      console.error('Telegram answerCallbackQuery fetch error:', (err as Error).message);
       return false;
     }
   }
@@ -155,7 +168,8 @@ export function formatJobCard(job: IngestJobPayload, lang: Language): string {
     lines.push(`${deadlinePrefix} <code>${escapeHtml(job.deadline)}</code>`);
   }
 
-  lines.push(`<a href="${job.url}">${linkText}</a>`);
+  // FIX: escape the URL so "&" or quotes cannot break the HTML parse
+  lines.push(`<a href="${escapeHtml(job.url)}">${linkText}</a>`);
 
   return lines.join('\n');
 }

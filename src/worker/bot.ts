@@ -37,13 +37,19 @@ export class TelegramBotHandler {
   ) {}
 
   public async handleUpdate(update: TelegramUpdate): Promise<void> {
-    if (update.callback_query) {
-      await this.handleCallbackQuery(update.callback_query);
-      return;
-    }
+    // FIX: log every failure (D1 errors, missing tables, etc.) so `wrangler tail` shows it.
+    // Errors are caught here so the webhook still returns 200 and Telegram does not retry forever.
+    try {
+      if (update.callback_query) {
+        await this.handleCallbackQuery(update.callback_query);
+        return;
+      }
 
-    if (update.message && update.message.text) {
-      await this.handleTextMessage(update.message);
+      if (update.message && update.message.text) {
+        await this.handleTextMessage(update.message);
+      }
+    } catch (err) {
+      console.error('handleUpdate failed:', (err as Error).stack || err);
     }
   }
 
@@ -51,6 +57,7 @@ export class TelegramBotHandler {
   private async handleTextMessage(msg: TelegramMessage): Promise<void> {
     const chatId = String(msg.chat.id);
     const text = (msg.text || '').trim();
+    console.log('text message from chat', chatId, ':', text);
 
     const user = await this.db.getOrCreateUser({
       chatId,
@@ -106,11 +113,12 @@ export class TelegramBotHandler {
           ],
         };
 
-        await this.bot.sendMessage(
+        const res = await this.bot.sendMessage(
           chatId,
           `${MESSAGES.fr.welcome}\n\n${MESSAGES.ar.welcome}`,
           { replyMarkup: kb }
         );
+        console.log('/start sendMessage result:', JSON.stringify(res));
         break;
       }
 
@@ -198,6 +206,8 @@ export class TelegramBotHandler {
       userId: String(cb.from.id),
       username: cb.from.username || null,
       firstName: cb.from.first_name || null,
+      // Same default as the text handler (only used if the user does not exist yet)
+      defaultLang: cb.from.language_code?.startsWith('ar') ? 'ar' : 'fr',
     });
 
     // Language selection
@@ -206,7 +216,6 @@ export class TelegramBotHandler {
       if (newLang === 'fr' || newLang === 'ar') {
         await this.db.updateUserLanguage(chatId, newLang);
         user.language = newLang;
-        const dict = MESSAGES[newLang];
         await this.bot.sendMessage(
           chatId,
           newLang === 'ar' ? '✅ تم ضبط اللغة بنجاح: العربية' : '✅ Langue configurée : Français'
@@ -239,14 +248,25 @@ export class TelegramBotHandler {
       return;
     }
 
+    // FIX: profile buttons (pause / resume) were never handled
+    if (data === 'cmd:pause' || data === 'cmd:resume') {
+      const dict = MESSAGES[user.language];
+      const status = data === 'cmd:pause' ? 'paused' : 'active';
+      await this.db.updateUserStatus(chatId, status);
+      await this.bot.sendMessage(chatId, status === 'paused' ? dict.paused : dict.resumed);
+      return;
+    }
+
+    // FIX: "edit" from /profile must work even when there is no conversation state yet
+    if (data === 'summary:edit' || data.startsWith('edit:restart')) {
+      await this.startOnboarding(user);
+      return;
+    }
+
     // Conversational flow buttons
     const conv = await this.db.getConversationState(chatId);
     if (!conv) {
-      // User might have pressed an old button after restart
-      if (data.startsWith('edit:restart')) {
-        await this.startOnboarding(user);
-        return;
-      }
+      // User pressed an old button after the conversation expired or restarted
       return;
     }
 
@@ -256,7 +276,6 @@ export class TelegramBotHandler {
   // 4. Conversational Step Logic
   public async startOnboarding(user: UserRecord): Promise<void> {
     const chatId = user.telegram_chat_id;
-    const dict = MESSAGES[user.language];
 
     await this.db.updateOnboardingStatus(chatId, 'in_progress');
 
@@ -501,7 +520,8 @@ export class TelegramBotHandler {
     const gradeLabels = grades
       .map((g) => (g === 'all' ? (isAr ? 'جميع الرتب' : 'Tous les grades') : getLabel(GRADE_OPTIONS, g, lang)))
       .join(', ');
-    const customGrade = data.custom_grade ? ` (${data.custom_grade})` : '';
+    // User-typed text must be escaped because the message is sent as HTML
+    const customGrade = data.custom_grade ? ` (${escapeUserText(String(data.custom_grade))})` : '';
     lines.push(`${isAr ? '🎓 <b>الرتب والشهادات:</b>' : '🎓 <b>Grades:</b>'} ${gradeLabels}${customGrade}`);
 
     // Location
@@ -509,7 +529,7 @@ export class TelegramBotHandler {
     const locLabels = locs
       .map((l) => getLabel(LOCATION_OPTIONS, l, lang))
       .join(', ');
-    const customLoc = data.custom_location ? ` (${data.custom_location})` : '';
+    const customLoc = data.custom_location ? ` (${escapeUserText(String(data.custom_location))})` : '';
     lines.push(`${isAr ? '📍 <b>الموقع:</b>' : '📍 <b>Localisation:</b>'} ${locLabels || (isAr ? 'كل المغرب' : 'Tout le Maroc')}${customLoc}`);
 
     // Sector
@@ -656,10 +676,7 @@ export class TelegramBotHandler {
         return;
       }
 
-      if (data === 'summary:edit') {
-        await this.startOnboarding(user);
-        return;
-      }
+      // 'summary:edit' is now handled earlier in handleCallbackQuery
     }
   }
 
@@ -771,4 +788,9 @@ export class TelegramBotHandler {
       await this.bot.sendMessage(chatId, chunk);
     }
   }
+}
+
+// Escape text typed by the user before inserting it in an HTML-mode Telegram message.
+function escapeUserText(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
